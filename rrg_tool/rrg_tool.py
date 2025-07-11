@@ -15,6 +15,39 @@ st.set_page_config(
     page_title="Sector Rotation Analysis",
     layout="centered"
 )
+
+# Password protection
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password not correct, show input + error.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()  # Do not continue if check_password is not True.
+
 # Apply fixed screen width for app (1440px)
 st.markdown(
     f"""
@@ -157,8 +190,8 @@ def smooth_data(x_vals, y_vals, method="Moving Average", window=3):
         return x_vals, y_vals
 
 
-def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_method="Moving Average",
-                    smoothing_window=3, show_tail=False):
+def create_rrg_plot(results, tail_length, selected_quadrants=None, enable_smoothing=True, 
+                    smoothing_method="Moving Average", smoothing_window=3, show_tail=False):
     """Create the Relative Rotation Graph"""
     fig = go.Figure()
 
@@ -199,40 +232,36 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         y_range[1] = max(y_range[1], 0.5)
 
     # Add quadrant backgrounds based on actual ranges
-    fig.add_shape(
-        type="rect",
-        x0=100, y0=0, x1=x_range[1], y1=y_range[1],
-        fillcolor="rgba(0,255,0,0.1)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="Leading"
-    )
-    fig.add_shape(
-        type="rect",
-        x0=100, y0=y_range[0], x1=x_range[1], y1=0,
-        fillcolor="rgba(255,165,0,0.1)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="Weakening"
-    )
-    fig.add_shape(
-        type="rect",
-        x0=x_range[0], y0=y_range[0], x1=100, y1=0,
-        fillcolor="rgba(255,0,0,0.1)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="Lagging"
-    )
-    fig.add_shape(
-        type="rect",
-        x0=x_range[0], y0=0, x1=100, y1=y_range[1],
-        fillcolor="rgba(0,0,255,0.1)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="Improving"
-    )
+    quad_colors = {
+        "Leading": "rgba(0,255,0,0.1)",
+        "Weakening": "rgba(255,165,0,0.1)",
+        "Lagging": "rgba(255,0,0,0.1)",
+        "Improving": "rgba(0,0,255,0.1)"
+    }
+    
+    for quad_name, color in quad_colors.items():
+        if quad_name == "Leading":
+            x0, y0, x1, y1 = 100, 0, x_range[1], y_range[1]
+        elif quad_name == "Weakening":
+            x0, y0, x1, y1 = 100, y_range[0], x_range[1], 0
+        elif quad_name == "Lagging":
+            x0, y0, x1, y1 = x_range[0], y_range[0], 100, 0
+        else:  # Improving
+            x0, y0, x1, y1 = x_range[0], 0, 100, y_range[1]
+            
+        fig.add_shape(
+            type="rect",
+            x0=x0, y0=y0, x1=x1, y1=y1,
+            fillcolor=color,
+            line=dict(color="rgba(0,0,0,0)"),
+            name=quad_name
+        )
 
     # Add center lines
     fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
     fig.add_vline(x=100, line_dash="dash", line_color="black", opacity=0.5)
 
-    colors = px.colors.qualitative.Set2
+    colors = px.colors.qualitative.Plotly  # More vibrant colors
 
     for i, (symbol, data) in enumerate(results.items()):
         if data['rs_ratio'] is None or data['rs_momentum'] is None:
@@ -250,19 +279,35 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         x_vals = rs_ratio.tail(tail_points).values
         y_vals = rs_momentum.tail(tail_points).values
 
-        # Apply smoothing if enabled
-        if enable_smoothing and tail_points > 2:
-            x_vals_smooth, y_vals_smooth = smooth_data(x_vals, y_vals, smoothing_method, smoothing_window)
-        else:
-            x_vals_smooth, y_vals_smooth = x_vals, y_vals
+        # Get current quadrant
+        current_quad, quad_color, quad_icon = get_quadrant_info(x_vals[-1], y_vals[-1])
+        
+        # Skip if not in selected quadrants
+        if selected_quadrants and current_quad not in selected_quadrants:
+            continue
 
         color = colors[i % len(colors)]
 
-        # Add tail (trajectory) - use smoothed data for the line, original for markers
+        # Apply smoothing if enabled
+        if enable_smoothing and tail_points > 2:
+            x_vals_smooth, y_vals_smooth = smooth_data(x_vals, y_vals, smoothing_method, smoothing_window)
+            
+            # Ensure the last point matches exactly (no smoothing on the current position)
+            x_vals_smooth[-1] = x_vals[-1]
+            y_vals_smooth[-1] = y_vals[-1]
+            
+            # Use smoothed data for both line and marker
+            display_x = x_vals_smooth
+            display_y = y_vals_smooth
+        else:
+            display_x = x_vals
+            display_y = y_vals
+
+        # Add tail (trajectory)
         if show_tail:
             fig.add_trace(go.Scatter(
-                x=x_vals_smooth,
-                y=y_vals_smooth,
+                x=display_x[:-1],  # All points except the last
+                y=display_y[:-1],
                 mode='lines',
                 name=f'{symbol} Trail',
                 line=dict(color=color, width=3, shape='spline' if smoothing_method == "Spline" else 'linear'),
@@ -270,20 +315,10 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
                 showlegend=False
             ))
 
-        # Add small markers along the trail (using original data)
-        if not enable_smoothing or len(x_vals) <= 5:
-            # Show more markers when not smoothing or short tail
-            marker_step = max(1, len(x_vals) // 8)
-        else:
-            # Fewer markers when smoothing for cleaner look
-            marker_step = max(2, len(x_vals) // 5)
-
-        # Add current position (larger marker) - always use original data
-        current_quad, quad_color, quad_icon = get_quadrant_info(x_vals[-1], y_vals[-1])
-
+        # Add current position (larger marker) - always use the last point
         fig.add_trace(go.Scatter(
-            x=[x_vals[-1]],
-            y=[y_vals[-1]],
+            x=[display_x[-1]],
+            y=[display_y[-1]],
             mode='markers+text',
             name=f'{symbol} ({current_quad})',
             marker=dict(
@@ -295,8 +330,8 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
             textposition="middle right",
             textfont=dict(size=15, color='black'),
             hovertemplate=f'<b>{symbol}</b><br>' +
-                          f'RS-Ratio: {x_vals[-1]:.2f}<br>' +
-                          f'RS-Momentum: {y_vals[-1]:.2f}<br>' +
+                          f'RS-Ratio: {display_x[-1]:.2f}<br>' +
+                          f'RS-Momentum: {display_y[-1]:.2f}<br>' +
                           f'Quadrant: {current_quad}<extra></extra>'
         ))
 
@@ -305,7 +340,7 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         xaxis_title="RS-Ratio",
         yaxis_title="RS-Momentum",
         width=800,
-        height=1000,
+        height=800,
         showlegend=False,
         legend=dict(
             orientation="v",
@@ -313,50 +348,46 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
             y=1,
             xanchor="left",
             x=1.01
-        )
+        ),
+        margin=dict(l=50, r=50, b=50, t=50, pad=4),
+        plot_bgcolor='rgba(240,240,240,0.8)',
+        paper_bgcolor='rgba(240,240,240,0.8)'
     )
 
     # Set dynamic axis ranges
     fig.update_xaxes(range=x_range)
     fig.update_yaxes(range=y_range)
 
+    # Add zoom and pan controls
+    fig.update_layout(
+        dragmode='pan',
+        hovermode='closest'
+    )
+
     # Add annotations for quadrants - position them based on actual ranges
-    x_mid = (x_range[0] + x_range[1]) / 2
-    y_mid = (y_range[0] + y_range[1]) / 2
-
-    # Leading quadrant (top-right)
-    leading_x = (100 + x_range[1]) / 2
-    leading_y = y_range[1] * 0.8
-    fig.add_annotation(x=leading_x, y=leading_y, text="Leading<br>(Hold Position)",
-                       # showarrow=False, font=dict(size=14, color="green"))
-                       showarrow=False, font=dict(size=14))
-
-    # Weakening quadrant (bottom-right)
-    weakening_x = (100 + x_range[1]) / 2
-    weakening_y = y_range[0] * 0.8
-    fig.add_annotation(x=weakening_x, y=weakening_y, text="Weakening<br>(Look to Sell)",
-                       # showarrow=False, font=dict(size=14, color="orange"))
-                       showarrow=False, font=dict(size=14))
-
-    # Lagging quadrant (bottom-left)
-    lagging_x = (x_range[0] + 100) / 2
-    lagging_y = y_range[0] * 0.8
-    fig.add_annotation(x=lagging_x, y=lagging_y, text="Lagging<br>(Avoid)",
-                       # showarrow=False, font=dict(size=14, color="red"))
-                       showarrow=False, font=dict(size=14))
-
-    # Improving quadrant (top-left)
-    improving_x = (x_range[0] + 100) / 2
-    improving_y = y_range[1] * 0.8
-    fig.add_annotation(x=improving_x, y=improving_y, text="Improving<br>(Look to Buy)",
-                       # showarrow=False, font=dict(size=14, color="blue"))
-                       showarrow=False, font=dict(size=14))
+    quad_annotations = {
+        "Leading": ("Leading<br>(Hold Position)", (100 + x_range[1]) / 2, y_range[1] * 0.8),
+        "Weakening": ("Weakening<br>(Look to Sell)", (100 + x_range[1]) / 2, y_range[0] * 0.8),
+        "Lagging": ("Lagging<br>(Avoid)", (x_range[0] + 100) / 2, y_range[0] * 0.8),
+        "Improving": ("Improving<br>(Look to Buy)", (x_range[0] + 100) / 2, y_range[1] * 0.8)
+    }
+    
+    for quad_name, (text, x_pos, y_pos) in quad_annotations.items():
+        if not selected_quadrants or quad_name in selected_quadrants:
+            fig.add_annotation(
+                x=x_pos,
+                y=y_pos,
+                text=text,
+                showarrow=False,
+                font=dict(size=14, color="black"),
+                bgcolor="white",
+                opacity=0.8
+            )
 
     return fig
 
 
 def main():
-
     st.subheader("Sector Rotation - Relative Rotation Graph")
     st.markdown(
         "Analyze sector/stock performance relative to benchmark using RRG methodology. Input Symbols as seen in Yahoo Finance")
@@ -365,12 +396,12 @@ def main():
     with col1:
         # Benchmark input
         benchmark = st.text_input("Benchmark Symbol", value="^NSEI",
-                                  help="Enter benchmark symbol (e.g., ^NSEI for Nifty 50)")
+                                help="Enter benchmark symbol (e.g., ^NSEI for Nifty 50)")
 
         st.markdown("<style> .st-bu { background-color: rgba(0, 0, 0, 0); } </style>", unsafe_allow_html=True)
 
-        # Period slider
-        period = st.slider("Analysis Period (days)", min_value=65, max_value=365, value=90, step=5)
+        # Period slider (minimum now 30 days)
+        period = st.slider("Analysis Period (days)", min_value=30, max_value=365, value=90, step=5)
 
         # Tail length slider
         tail_length = st.slider("Tail Length (days)", min_value=2, max_value=25, value=4, step=1)
@@ -378,7 +409,7 @@ def main():
     with col2:
         # Sectors input
         default_sectors = ["^CNXAUTO", "^CNXPHARMA", "^CNXMETAL", "^CNXIT", "^CNXENERGY", "^CNXREALTY", "^CNXPSUBANK",
-                           "^CNXMEDIA", "^CNXINFRA", "^CNXPSE", "RELIANCE.NS", "INFY.NS"]
+                          "^CNXMEDIA", "^CNXINFRA", "^CNXPSE", "RELIANCE.NS", "INFY.NS"]
 
         sectors_text = st.text_area(
             "Enter Sector/Stock symbols (one per line)",
@@ -388,6 +419,15 @@ def main():
         )
 
         sectors = [s.strip() for s in sectors_text.split('\n') if s.strip()]
+
+        # Quadrant filter
+        quadrants = ["Leading", "Weakening", "Lagging", "Improving"]
+        selected_quadrants = st.multiselect(
+            "Filter by Quadrant (select none to show all)",
+            quadrants,
+            default=None,
+            help="Show only sectors in selected quadrants"
+        )
 
         show_tail = st.checkbox(label="Show Tail", value=False)
 
@@ -445,7 +485,8 @@ def main():
                 return
 
             # Create and display the plot
-            fig = create_rrg_plot(results, tail_length, show_tail=show_tail)
+            fig = create_rrg_plot(results, tail_length, selected_quadrants=selected_quadrants if selected_quadrants else None, 
+                                show_tail=show_tail)
             st.plotly_chart(fig, use_container_width=True)
 
             # Summary table
@@ -459,40 +500,49 @@ def main():
 
                     quadrant, color, icon = get_quadrant_info(current_ratio, current_momentum)
 
+                    # Skip if not in selected quadrants
+                    if selected_quadrants and quadrant not in selected_quadrants:
+                        continue
+
                     summary_data.append({
                         'Sector': symbol,
                         'RS-Ratio': f"{current_ratio:.2f}",
                         'RS-Momentum': f"{current_momentum:.2f}",
-                        'Quadrant': f"{quadrant}"
+                        'Quadrant': f"{icon} {quadrant}"
                     })
 
             if summary_data:
                 df_summary = pd.DataFrame(summary_data)
-                st.dataframe(df_summary, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    df_summary.style.apply(lambda x: ['background: white' for i in x], axis=1),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.warning("No sectors match the selected quadrant filters")
 
             # Explanation
             with st.expander("Understanding the Relative Rotation Graph"):
                 st.markdown("""
                     **Quadrants Explanation:**
 
-                    **Leading (Top-Right)**: High relative strength, positive momentum
-                    - Sectors out performing benchmark with increasing momentum
+                    - **🚀 Leading (Top-Right)**: High relative strength, positive momentum  
+                      Sectors outperforming benchmark with increasing momentum - consider holding
+                    
+                    - **📉 Weakening (Bottom-Right)**: High relative strength, negative momentum  
+                      Sectors still outperforming but losing momentum - consider selling
+                    
+                    - **📊 Lagging (Bottom-Left)**: Low relative strength, negative momentum  
+                      Sectors underperforming benchmark with decreasing momentum - avoid
+                    
+                    - **📈 Improving (Top-Left)**: Low relative strength, positive momentum  
+                      Sectors underperforming but gaining momentum - potential buying opportunity
 
-                    **Weakening (Bottom-Right)**: High relative strength, negative momentum  
-                    - Sectors still out performing but losing momentum
-
-                    **Lagging (Bottom-Left)**: Low relative strength, negative momentum
-                    - Sectors under performing benchmark with decreasing momentum
-
-                    **Improving (Top-Left)**: Low relative strength, positive momentum
-                    - Sectors under performing but gaining momentum
-
-                    **How to Read:**
-                    - **RS-Ratio > 100**: Sector out performing benchmark
-                    - **RS-Ratio < 100**: Sector under performing benchmark  
-                    - **RS-Momentum > 0**: Relative strength is improving
-                    - **RS-Momentum < 0**: Relative strength is declining
-                    - **Tail**: Shows the trajectory of sector movement over time
+                    **How to Use:**
+                    - Use the quadrant filter to focus on specific market segments
+                    - Hover over points for detailed information
+                    - Zoom/pan by clicking the toolbar icons in the top-right of the chart
+                    - The tail shows the trajectory of sector movement over time
                     """)
 
 
