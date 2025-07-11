@@ -445,7 +445,7 @@ def main():
                 return
 
             # Create and display the plot
-            fig = create_rrg_plot(results, tail_length, show_tail)
+            fig = create_rrg_plot(results, tail_length, show_tail=show_tail)
             st.plotly_chart(fig, use_container_width=True)
 
             # Summary table
