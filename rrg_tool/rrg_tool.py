@@ -11,7 +11,7 @@ from scipy.interpolate import interp1d
 warnings.filterwarnings('ignore')
 
 # Password for the application
-APP_PASSWORD = "sector2024"
+APP_PASSWORD = "test1234"
 
 # Configure page
 st.set_page_config(
