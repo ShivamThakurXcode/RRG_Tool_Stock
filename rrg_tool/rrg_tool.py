@@ -10,12 +10,9 @@ from scipy.interpolate import interp1d
 
 warnings.filterwarnings('ignore')
 
-# Password for the application
-APP_PASSWORD = "test1234"
-
 # Configure page
 st.set_page_config(
-    page_title="Sector Rotation Analysis",
+    page_title="Enhanced Sector Rotation Analysis",
     layout="centered"
 )
 
@@ -24,31 +21,27 @@ st.markdown(
     f"""
     <style>
       .stAppViewContainer .stMain .stMainBlockContainer{{ max-width: 1440px; }}
+      .metric-card {{
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+        margin: 0.5rem 0;
+      }}
+      .quadrant-info {{
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 0.5rem;
+        text-align: center;
+      }}
+      .leading {{ background: rgba(76,175,80,0.15); border: 2px solid #4CAF50; }}
+      .weakening {{ background: rgba(255,152,0,0.15); border: 2px solid #FF9800; }}
+      .lagging {{ background: rgba(244,67,54,0.15); border: 2px solid #F44336; }}
+      .improving {{ background: rgba(33,150,243,0.15); border: 2px solid #2196F3; }}
     </style>    
-  """,
+    """,
     unsafe_allow_html=True,
 )
-
-def check_password():
-    """Password protection for the application"""
-    if 'password_correct' not in st.session_state:
-        st.session_state['password_correct'] = False
-    
-    if not st.session_state['password_correct']:
-        st.title("Sector Rotation Analysis - Access Required")
-        st.markdown("Please enter the password to access the application.")
-        
-        password = st.text_input("Password", type="password", key="password_input")
-        
-        if st.button("Login"):
-            if password == APP_PASSWORD:
-                st.session_state['password_correct'] = True
-                st.success("Access granted! Redirecting...")
-                st.rerun()
-            else:
-                st.error("Incorrect password. Please try again.")
-        
-        st.stop()
 
 def fetch_data(symbols, period_days):
     """Fetch data from Yahoo Finance with error handling"""
@@ -59,20 +52,46 @@ def fetch_data(symbols, period_days):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=period_days + 10)  # Add buffer for calculations
 
-    for symbol in symbols:
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, symbol in enumerate(symbols):
         try:
-            hist = yf.download(symbol, start_date, end_date, multi_level_index=False)
+            status_text.text(f"Fetching data for {symbol}...")
+            progress_bar.progress((i + 1) / len(symbols))
+            
+            hist = yf.download(symbol, start_date, end_date, progress=False, auto_adjust=True, prepost=True, threads=True)
 
             if len(hist) < 20:  # Minimum data requirement
-                failed_symbols.append(symbol)
+                failed_symbols.append(f"{symbol} (Insufficient data)")
                 continue
 
-            data[symbol] = hist['Close']
+            # Get close prices - handle different column formats
+            if 'Close' in hist.columns:
+                close_prices = hist['Close']
+            elif 'Adj Close' in hist.columns:
+                close_prices = hist['Adj Close']
+            else:
+                close_prices = hist.iloc[:, -1]  # Last column as fallback
+                
+            # Clean the data
+            close_prices = close_prices.dropna()
+            
+            if len(close_prices) < 20:
+                failed_symbols.append(f"{symbol} (Too many missing values)")
+                continue
+                
+            data[symbol] = close_prices
+            
         except Exception as e:
-            failed_symbols.append(symbol)
+            failed_symbols.append(f"{symbol} (Error: {str(e)[:50]})")
             continue
-
+    
+    progress_bar.empty()
+    status_text.empty()
+    
     return data, failed_symbols
+
 
 def calculate_relative_strength(price_data, benchmark_data, period):
     """Calculate relative strength vs benchmark"""
@@ -98,6 +117,7 @@ def calculate_relative_strength(price_data, benchmark_data, period):
 
     return relative_strength, rs_momentum
 
+
 def calculate_jdk_rs_ratio(relative_strength, short_period=10, long_period=40):
     """Calculate JdK RS-Ratio similar to RRG methodology"""
     if len(relative_strength) < long_period:
@@ -107,6 +127,7 @@ def calculate_jdk_rs_ratio(relative_strength, short_period=10, long_period=40):
     rs_normalized = (relative_strength / relative_strength.rolling(long_period).mean()) * 100
 
     return rs_normalized
+
 
 def calculate_jdk_rs_momentum(rs_ratio, period=10):
     """Calculate JdK RS-Momentum"""
@@ -118,34 +139,18 @@ def calculate_jdk_rs_momentum(rs_ratio, period=10):
 
     return momentum
 
+
 def get_quadrant_info(rs_ratio, rs_momentum):
     """Determine quadrant and provide info"""
     if rs_ratio > 100 and rs_momentum > 0:
-        return "Leading", "green", "🚀"
+        return "Leading", "#4CAF50", "🚀", "Strong outperformance with positive momentum"
     elif rs_ratio > 100 and rs_momentum < 0:
-        return "Weakening", "orange", "📉"
+        return "Weakening", "#FF9800", "📉", "Outperforming but losing momentum"
     elif rs_ratio < 100 and rs_momentum < 0:
-        return "Lagging", "red", "📊"
+        return "Lagging", "#F44336", "📊", "Underperforming with negative momentum"
     else:
-        return "Improving", "blue", "📈"
+        return "Improving", "#2196F3", "📈", "Underperforming but gaining momentum"
 
-def filter_by_quadrant(results, selected_quadrants):
-    """Filter results by selected quadrants"""
-    if "All" in selected_quadrants:
-        return results
-    
-    filtered_results = {}
-    for symbol, data in results.items():
-        if data['rs_ratio'] is not None and data['rs_momentum'] is not None:
-            current_ratio = data['rs_ratio'].iloc[-1] if len(data['rs_ratio']) > 0 else 0
-            current_momentum = data['rs_momentum'].iloc[-1] if len(data['rs_momentum']) > 0 else 0
-            
-            quadrant, _, _ = get_quadrant_info(current_ratio, current_momentum)
-            
-            if quadrant in selected_quadrants:
-                filtered_results[symbol] = data
-    
-    return filtered_results
 
 def smooth_data(x_vals, y_vals, method="Moving Average", window=3):
     """Smooth the tail data using various methods"""
@@ -194,9 +199,13 @@ def smooth_data(x_vals, y_vals, method="Moving Average", window=3):
         # If smoothing fails, return original data
         return x_vals, y_vals
 
+
 def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_method="Moving Average",
-                    smoothing_window=3, show_tail=True):
-    """Create the Relative Rotation Graph"""
+                    smoothing_window=3, show_tail=False, active_quadrants=None):
+    """Create the Relative Rotation Graph with quadrant filtering"""
+    if active_quadrants is None:
+        active_quadrants = ["Leading", "Weakening", "Lagging", "Improving"]
+    
     fig = go.Figure()
 
     # First, determine the actual data ranges
@@ -235,32 +244,39 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
     if y_range[1] < 0:
         y_range[1] = max(y_range[1], 0.5)
 
-    # Add quadrant backgrounds based on actual ranges
+    # Add quadrant backgrounds based on actual ranges and active status
+    quad_colors = {
+        "Leading": "rgba(76,175,80,0.1)" if "Leading" in active_quadrants else "rgba(76,175,80,0.03)",
+        "Weakening": "rgba(255,152,0,0.1)" if "Weakening" in active_quadrants else "rgba(255,152,0,0.03)",
+        "Lagging": "rgba(244,67,54,0.1)" if "Lagging" in active_quadrants else "rgba(244,67,54,0.03)",
+        "Improving": "rgba(33,150,243,0.1)" if "Improving" in active_quadrants else "rgba(33,150,243,0.03)"
+    }
+
     fig.add_shape(
         type="rect",
         x0=100, y0=0, x1=x_range[1], y1=y_range[1],
-        fillcolor="rgba(0,255,0,0.1)",
+        fillcolor=quad_colors["Leading"],
         line=dict(color="rgba(0,0,0,0)"),
         name="Leading"
     )
     fig.add_shape(
         type="rect",
         x0=100, y0=y_range[0], x1=x_range[1], y1=0,
-        fillcolor="rgba(255,165,0,0.1)",
+        fillcolor=quad_colors["Weakening"],
         line=dict(color="rgba(0,0,0,0)"),
         name="Weakening"
     )
     fig.add_shape(
         type="rect",
         x0=x_range[0], y0=y_range[0], x1=100, y1=0,
-        fillcolor="rgba(255,0,0,0.1)",
+        fillcolor=quad_colors["Lagging"],
         line=dict(color="rgba(0,0,0,0)"),
         name="Lagging"
     )
     fig.add_shape(
         type="rect",
         x0=x_range[0], y0=0, x1=100, y1=y_range[1],
-        fillcolor="rgba(0,0,255,0.1)",
+        fillcolor=quad_colors["Improving"],
         line=dict(color="rgba(0,0,0,0)"),
         name="Improving"
     )
@@ -269,7 +285,7 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
     fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
     fig.add_vline(x=100, line_dash="dash", line_color="black", opacity=0.5)
 
-    colors = px.colors.qualitative.Set2
+    colors = px.colors.qualitative.Plotly
 
     for i, (symbol, data) in enumerate(results.items()):
         if data['rs_ratio'] is None or data['rs_momentum'] is None:
@@ -287,6 +303,13 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         x_vals = rs_ratio.tail(tail_points).values
         y_vals = rs_momentum.tail(tail_points).values
 
+        # Get current quadrant
+        current_quad, quad_color, quad_icon, quad_desc = get_quadrant_info(x_vals[-1], y_vals[-1])
+        
+        # Skip if not in active quadrants
+        if current_quad not in active_quadrants:
+            continue
+
         # Apply smoothing if enabled
         if enable_smoothing and tail_points > 2:
             x_vals_smooth, y_vals_smooth = smooth_data(x_vals, y_vals, smoothing_method, smoothing_window)
@@ -296,38 +319,64 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         color = colors[i % len(colors)]
 
         # Add tail (trajectory) - use smoothed data for the line, original for markers
-        if show_tail and len(x_vals_smooth) > 1:
+        if show_tail:
             fig.add_trace(go.Scatter(
                 x=x_vals_smooth,
                 y=y_vals_smooth,
-                mode='lines+markers',
+                mode='lines',
                 name=f'{symbol} Trail',
-                line=dict(color=color, width=2),
-                marker=dict(size=4, color=color),
+                line=dict(color=color, width=3, shape='spline' if smoothing_method == "Spline" else 'linear'),
                 opacity=0.7,
-                showlegend=False
+                showlegend=False,
+                hovertemplate=f'<b>{symbol} Trail</b><extra></extra>'
             ))
 
-        # Add current position (larger marker) - always use original data
-        current_quad, quad_color, quad_icon = get_quadrant_info(x_vals[-1], y_vals[-1])
+            # Add direction markers along the trail
+            if len(x_vals) > 3:
+                marker_indices = np.linspace(0, len(x_vals_smooth)-1, min(5, len(x_vals_smooth))).astype(int)
+                
+                # Add arrows to show direction
+                for j in range(len(marker_indices)-1):
+                    idx = marker_indices[j]
+                    next_idx = marker_indices[j+1]
+                    
+                    fig.add_annotation(
+                        x=x_vals_smooth[next_idx],
+                        y=y_vals_smooth[next_idx],
+                        ax=x_vals_smooth[idx],
+                        ay=y_vals_smooth[idx],
+                        xref="x",
+                        yref="y",
+                        axref="x",
+                        ayref="y",
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=1.5,
+                        arrowcolor=color,
+                        opacity=0.7
+                    )
 
+        # Add current position (larger marker) - always use original data
         fig.add_trace(go.Scatter(
             x=[x_vals[-1]],
             y=[y_vals[-1]],
             mode='markers+text',
             name=f'{symbol} ({current_quad})',
             marker=dict(
-                size=15,
+                size=20,
                 color=color,
-                line=dict(width=2, color='white')
+                line=dict(width=2, color='white'),
+                symbol='diamond'
             ),
             text=[f'{symbol}'],
             textposition="middle right",
-            textfont=dict(size=12, color='black'),
+            textfont=dict(size=15, color='black'),
             hovertemplate=f'<b>{symbol}</b><br>' +
                           f'RS-Ratio: {x_vals[-1]:.2f}<br>' +
                           f'RS-Momentum: {y_vals[-1]:.2f}<br>' +
-                          f'Quadrant: {current_quad}<extra></extra>'
+                          f'Quadrant: {current_quad}<br>' +
+                          f'{quad_desc}<extra></extra>'
         ))
 
     # Update layout
@@ -336,110 +385,159 @@ def create_rrg_plot(results, tail_length, enable_smoothing=True, smoothing_metho
         xaxis_title="RS-Ratio",
         yaxis_title="RS-Momentum",
         width=800,
-        height=700,
+        height=800,
         showlegend=False,
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.01
-        )
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=50, r=50, b=50, t=80, pad=10)
     )
 
     # Set dynamic axis ranges
-    fig.update_xaxes(range=x_range)
-    fig.update_yaxes(range=y_range)
+    fig.update_xaxes(range=x_range, gridcolor='lightgray', gridwidth=0.5)
+    fig.update_yaxes(range=y_range, gridcolor='lightgray', gridwidth=0.5)
 
-    # Add annotations for quadrants - position them based on actual ranges
+    # Add annotations for quadrants - only show active ones
     x_mid = (x_range[0] + x_range[1]) / 2
     y_mid = (y_range[0] + y_range[1]) / 2
 
     # Leading quadrant (top-right)
-    leading_x = (100 + x_range[1]) / 2
-    leading_y = y_range[1] * 0.8
-    fig.add_annotation(x=leading_x, y=leading_y, text="Leading<br>(Hold Position)",
-                       showarrow=False, font=dict(size=12))
+    if "Leading" in active_quadrants:
+        leading_x = (100 + x_range[1]) / 2
+        leading_y = y_range[1] * 0.8
+        fig.add_annotation(x=leading_x, y=leading_y, text="🚀 Leading<br><i>Hold Position</i>",
+                           showarrow=False, font=dict(size=14, color="#4CAF50"))
 
     # Weakening quadrant (bottom-right)
-    weakening_x = (100 + x_range[1]) / 2
-    weakening_y = y_range[0] * 0.8
-    fig.add_annotation(x=weakening_x, y=weakening_y, text="Weakening<br>(Look to Sell)",
-                       showarrow=False, font=dict(size=12))
+    if "Weakening" in active_quadrants:
+        weakening_x = (100 + x_range[1]) / 2
+        weakening_y = y_range[0] * 0.8
+        fig.add_annotation(x=weakening_x, y=weakening_y, text="📉 Weakening<br><i>Look to Sell</i>",
+                           showarrow=False, font=dict(size=14, color="#FF9800"))
 
     # Lagging quadrant (bottom-left)
-    lagging_x = (x_range[0] + 100) / 2
-    lagging_y = y_range[0] * 0.8
-    fig.add_annotation(x=lagging_x, y=lagging_y, text="Lagging<br>(Avoid)",
-                       showarrow=False, font=dict(size=12))
+    if "Lagging" in active_quadrants:
+        lagging_x = (x_range[0] + 100) / 2
+        lagging_y = y_range[0] * 0.8
+        fig.add_annotation(x=lagging_x, y=lagging_y, text="📊 Lagging<br><i>Avoid</i>",
+                           showarrow=False, font=dict(size=14, color="#F44336"))
 
     # Improving quadrant (top-left)
-    improving_x = (x_range[0] + 100) / 2
-    improving_y = y_range[1] * 0.8
-    fig.add_annotation(x=improving_x, y=improving_y, text="Improving<br>(Look to Buy)",
-                       showarrow=False, font=dict(size=12))
+    if "Improving" in active_quadrants:
+        improving_x = (x_range[0] + 100) / 2
+        improving_y = y_range[1] * 0.8
+        fig.add_annotation(x=improving_x, y=improving_y, text="📈 Improving<br><i>Look to Buy</i>",
+                           showarrow=False, font=dict(size=14, color="#2196F3"))
 
     return fig
 
-def main():
-    # Check password first
-    check_password()
-    
-    st.title(" Sector Rotation Analysis")
-    st.subheader("Relative Rotation Graph (RRG) Analysis")
-    st.markdown(
-        "Analyze sector/stock performance relative to benchmark using RRG methodology. Input symbols as seen in Yahoo Finance.")
 
-    # Main input section
+def create_summary_table(results, active_quadrants=None):
+    """Create summary table with quadrant filtering"""
+    if active_quadrants is None:
+        active_quadrants = ["Leading", "Weakening", "Lagging", "Improving"]
+    
+    summary_data = []
+
+    for symbol, data in results.items():
+        if data['rs_ratio'] is not None and data['rs_momentum'] is not None:
+            current_ratio = data['rs_ratio'].iloc[-1] if len(data['rs_ratio']) > 0 else 0
+            current_momentum = data['rs_momentum'].iloc[-1] if len(data['rs_momentum']) > 0 else 0
+
+            quadrant, color, icon, description = get_quadrant_info(current_ratio, current_momentum)
+            
+            # Skip if not in active quadrants
+            if quadrant not in active_quadrants:
+                continue
+
+            # Calculate trends
+            ratio_trend = "↗️" if len(data['rs_ratio']) > 1 and data['rs_ratio'].iloc[-1] > data['rs_ratio'].iloc[-2] else "↘️"
+            momentum_trend = "↗️" if len(data['rs_momentum']) > 1 and data['rs_momentum'].iloc[-1] > data['rs_momentum'].iloc[-2] else "↘️"
+            
+            summary_data.append({
+                'Symbol': f"{icon} {symbol}",
+                'RS-Ratio': f"{current_ratio:.2f} {ratio_trend}",
+                'RS-Momentum': f"{current_momentum:.2f} {momentum_trend}",
+                'Quadrant': quadrant,
+                'Signal': description
+            })
+
+    return pd.DataFrame(summary_data)
+
+
+def main():
+    st.title("Enhanced Sector Rotation Analysis")
+    st.markdown("Analyze sector/stock performance relative to benchmark using RRG methodology")
+
+    # Initialize session state for quadrant filters
+    if 'active_quadrants' not in st.session_state:
+        st.session_state.active_quadrants = ["Leading", "Weakening", "Lagging", "Improving"]
+
     col1, col2 = st.columns([1, 1], gap="large")
     
     with col1:
         # Benchmark input
         benchmark = st.text_input("Benchmark Symbol", value="^NSEI",
-                                  help="Enter benchmark symbol (e.g., ^NSEI for Nifty 50)")
+                                help="Enter benchmark symbol (e.g., ^NSEI for Nifty 50)")
 
-        # Period slider - minimum changed to 30 days
-        period = st.slider("Analysis Period (days)", min_value=30, max_value=365, value=90, step=5)
+        # Period slider
+        period = st.slider("Analysis Period (days)", min_value=65, max_value=365, value=90, step=5)
 
         # Tail length slider
-        tail_length = st.slider("Tail Length (days)", min_value=2, max_value=25, value=8, step=1)
+        tail_length = st.slider("Tail Length (days)", min_value=2, max_value=25, value=10, step=1)
 
-        # Show tail checkbox
-        show_tail = st.checkbox(label="Show Tail", value=True)
+        # Smoothing options
+        st.subheader("Visualization Options")
+        smoothing_method = st.selectbox(
+            "Smoothing Method",
+            ["Moving Average", "Exponential", "Spline"],
+            help="Algorithm for smoothing the tail curves"
+        )
+        
+        smoothing_window = st.slider(
+            "Smoothing Window",
+            min_value=2,
+            max_value=10,
+            value=3,
+            step=1,
+            help="Window size for smoothing algorithm"
+        )
+        
+        show_tail = st.checkbox("Show Tail", value=True)
 
     with col2:
-        # Quadrant filter
-        st.markdown("**Filter by Quadrant:**")
-        quadrant_options = ["All", "Leading", "Weakening", "Lagging", "Improving"]
-        selected_quadrants = st.multiselect(
-            "Select Quadrants to Display:",
-            options=quadrant_options,
-            default=["All"],
-            help="Select specific quadrants to filter the display"
-        )
-
-        # Default sectors
-        default_sectors = ["^CNXAUTO", "^CNXPHARMA", "^CNXMETAL", "^CNXIT", "^CNXENERGY", 
-                          "^CNXREALTY", "^CNXPSUBANK", "^CNXMEDIA", "^CNXINFRA", "^CNXPSE", 
-                          "RELIANCE.NS", "INFY.NS"]
+        # Sectors input
+        default_sectors = ["^CNXAUTO", "^CNXPHARMA", "^CNXMETAL", "^CNXIT", "^CNXENERGY", "^CNXREALTY", "^CNXPSUBANK",
+                         "^CNXMEDIA", "^CNXINFRA", "^CNXPSE", "RELIANCE.NS", "INFY.NS"]
 
         sectors_text = st.text_area(
             "Enter Sector/Stock symbols (one per line)",
             value="\n".join(default_sectors),
-            height=150,
+            height=220,
             help="Enter each sector/stock symbol on a new line"
         )
 
         sectors = [s.strip() for s in sectors_text.split('\n') if s.strip()]
 
+        # Quadrant filtering
+        st.subheader("Quadrant Filters")
+        st.markdown("Select which quadrants to display:")
+        
+        leading = st.checkbox("🚀 Leading", value="Leading" in st.session_state.active_quadrants, key="leading_check")
+        weakening = st.checkbox("📉 Weakening", value="Weakening" in st.session_state.active_quadrants, key="weakening_check")
+        lagging = st.checkbox("📊 Lagging", value="Lagging" in st.session_state.active_quadrants, key="lagging_check")
+        improving = st.checkbox("📈 Improving", value="Improving" in st.session_state.active_quadrants, key="improving_check")
+        
+        # Update active quadrants based on checkboxes
+        st.session_state.active_quadrants = []
+        if leading: st.session_state.active_quadrants.append("Leading")
+        if weakening: st.session_state.active_quadrants.append("Weakening")
+        if lagging: st.session_state.active_quadrants.append("Lagging")
+        if improving: st.session_state.active_quadrants.append("Improving")
+
     # Analysis button
-    if st.button("🚀 Run Analysis", type="primary"):
+    if st.button("Run Analysis", type="primary"):
         if not sectors:
             st.error("Please enter at least one sector symbol")
-            return
-
-        if not selected_quadrants:
-            st.error("Please select at least one quadrant to display")
             return
 
         with st.spinner("Fetching data and calculating metrics..."):
@@ -448,6 +546,8 @@ def main():
 
             if benchmark not in benchmark_data:
                 st.error(f"Could not fetch data for benchmark: {benchmark}")
+                if benchmark_failed:
+                    st.error(f"Error details: {benchmark_failed[0]}")
                 return
 
             # Fetch sector data
@@ -459,7 +559,9 @@ def main():
 
             # Show warnings for failed symbols
             if failed_sectors:
-                st.warning(f"Could not fetch data for: {', '.join(failed_sectors)}")
+                with st.expander(f"⚠️ Warning: {len(failed_sectors)} symbols failed"):
+                    for failed in failed_sectors:
+                        st.warning(f"• {failed}")
 
             # Calculate relative rotation metrics
             results = {}
@@ -489,87 +591,92 @@ def main():
                 st.error("Could not calculate metrics for any sectors")
                 return
 
-            # Apply quadrant filtering
-            filtered_results = filter_by_quadrant(results, selected_quadrants)
-
-            if not filtered_results:
-                st.warning("No sectors found in the selected quadrants")
-                return
-
             # Create and display the plot
-            fig = create_rrg_plot(filtered_results, tail_length, show_tail=show_tail)
+            fig = create_rrg_plot(
+                results, 
+                tail_length, 
+                enable_smoothing=True,
+                smoothing_method=smoothing_method,
+                smoothing_window=smoothing_window,
+                show_tail=show_tail,
+                active_quadrants=st.session_state.active_quadrants
+            )
+            
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("Could not create RRG plot")
+                return
 
             # Summary table
-            st.subheader(" Sector/Stock Positions Summary")
+            st.subheader("Relative Positions of Sector/Stock")
+            summary_df = create_summary_table(results, st.session_state.active_quadrants)
             
-            if "All" not in selected_quadrants:
-                st.info(f"Showing only: {', '.join(selected_quadrants)} quadrants")
-            
-            summary_data = []
+            if not summary_df.empty:
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("No symbols match the current quadrant filters")
 
-            for symbol, data in filtered_results.items():
-                if data['rs_ratio'] is not None and data['rs_momentum'] is not None:
-                    current_ratio = data['rs_ratio'].iloc[-1] if len(data['rs_ratio']) > 0 else 0
-                    current_momentum = data['rs_momentum'].iloc[-1] if len(data['rs_momentum']) > 0 else 0
-
-                    quadrant, color, icon = get_quadrant_info(current_ratio, current_momentum)
-
-                    summary_data.append({
-                        'Symbol': symbol,
-                        'RS-Ratio': f"{current_ratio:.2f}",
-                        'RS-Momentum': f"{current_momentum:.2f}",
-                        'Quadrant': f"{icon} {quadrant}",
-                        'Status': quadrant
-                    })
-
-            if summary_data:
-                df_summary = pd.DataFrame(summary_data)
-                st.dataframe(df_summary, use_container_width=True, hide_index=True)
-
-                # Quadrant counts
-                st.subheader(" Quadrant Distribution")
-                quadrant_counts = df_summary['Status'].value_counts()
-                col1, col2, col3, col4 = st.columns(4)
+            # Quadrant distribution
+            if st.session_state.active_quadrants:
+                cols = st.columns(len(st.session_state.active_quadrants))
                 
-                with col1:
-                    st.metric("🚀 Leading", quadrant_counts.get('Leading', 0))
-                with col2:
-                    st.metric("📉 Weakening", quadrant_counts.get('Weakening', 0))
-                with col3:
-                    st.metric("📊 Lagging", quadrant_counts.get('Lagging', 0))
-                with col4:
-                    st.metric("📈 Improving", quadrant_counts.get('Improving', 0))
+                quadrant_counts = summary_df['Quadrant'].value_counts()
+                
+                for i, quadrant in enumerate(st.session_state.active_quadrants):
+                    with cols[i]:
+                        count = quadrant_counts.get(quadrant, 0)
+                        
+                        # Get quadrant info
+                        if quadrant == "Leading":
+                            color = "#4CAF50"
+                            icon = "🚀"
+                        elif quadrant == "Weakening":
+                            color = "#FF9800"
+                            icon = "📉"
+                        elif quadrant == "Lagging":
+                            color = "#F44336"
+                            icon = "📊"
+                        else:  # Improving
+                            color = "#2196F3"
+                            icon = "📈"
+                        
+                        st.markdown(
+                            f'<div class="quadrant-info" style="border-color: {color}">'
+                            f'<h3>{icon} {quadrant}</h3><h2>{count}</h2></div>', 
+                            unsafe_allow_html=True
+                        )
 
-            # Explanation
-            with st.expander(" Understanding the Relative Rotation Graph"):
-                st.markdown("""
-                **Quadrants Explanation:**
+    # Explanation
+    with st.expander("📚 Understanding the Relative Rotation Graph"):
+        st.markdown("""
+            **Quadrants Explanation:**
 
-                **🚀 Leading (Top-Right)**: High relative strength, positive momentum
-                - Sectors outperforming benchmark with increasing momentum
-                - **Action**: Hold position
+            **🚀 Leading (Top-Right)**: High relative strength, positive momentum  
+            - Sectors out performing benchmark with increasing momentum  
+            - **Strategy:** Hold positions, strong performance continues  
 
-                **📉 Weakening (Bottom-Right)**: High relative strength, negative momentum  
-                - Sectors still outperforming but losing momentum
-                - **Action**: Look to sell
+            **📉 Weakening (Bottom-Right)**: High relative strength, negative momentum  
+            - Sectors still out performing but losing momentum  
+            - **Strategy:** Consider taking profits, watch for rotation  
 
-                **📊 Lagging (Bottom-Left)**: Low relative strength, negative momentum
-                - Sectors underperforming benchmark with decreasing momentum
-                - **Action**: Avoid
+            **📊 Lagging (Bottom-Left)**: Low relative strength, negative momentum  
+            - Sectors under performing benchmark with decreasing momentum  
+            - **Strategy:** Avoid or reduce exposure  
 
-                **📈 Improving (Top-Left)**: Low relative strength, positive momentum
-                - Sectors underperforming but gaining momentum
-                - **Action**: Look to buy
+            **📈 Improving (Top-Left)**: Low relative strength, positive momentum  
+            - Sectors under performing but gaining momentum  
+            - **Strategy:** Watch for entry opportunities  
 
-                **How to Read:**
-                - **RS-Ratio > 100**: Sector outperforming benchmark
-                - **RS-Ratio < 100**: Sector underperforming benchmark  
-                - **RS-Momentum > 0**: Relative strength is improving
-                - **RS-Momentum < 0**: Relative strength is declining
-                - **Tail**: Shows the trajectory of sector movement over time
-                """)
+            **How to Read:**  
+            - **RS-Ratio > 100**: Sector out performing benchmark  
+            - **RS-Ratio < 100**: Sector under performing benchmark  
+            - **RS-Momentum > 0**: Relative strength is improving  
+            - **RS-Momentum < 0**: Relative strength is declining  
+            - **Tail:** Shows the trajectory of sector movement over time  
+            - **Direction Arrows:** Indicate movement direction along the tail  
+            """)
+
 
 if __name__ == "__main__":
     main()
