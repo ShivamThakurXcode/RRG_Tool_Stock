@@ -35,7 +35,7 @@ def check_password():
         st.session_state['password_correct'] = False
     
     if not st.session_state['password_correct']:
-        st.title("🔒 Sector Rotation Analysis - Access Required")
+        st.title("Sector Rotation Analysis - Access Required")
         st.markdown("Please enter the password to access the application.")
         
         password = st.text_input("Password", type="password", key="password_input")
@@ -385,7 +385,7 @@ def main():
     # Check password first
     check_password()
     
-    st.title("🔄 Sector Rotation Analysis")
+    st.title(" Sector Rotation Analysis")
     st.subheader("Relative Rotation Graph (RRG) Analysis")
     st.markdown(
         "Analyze sector/stock performance relative to benchmark using RRG methodology. Input symbols as seen in Yahoo Finance.")
@@ -502,7 +502,7 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
             # Summary table
-            st.subheader("📊 Sector/Stock Positions Summary")
+            st.subheader(" Sector/Stock Positions Summary")
             
             if "All" not in selected_quadrants:
                 st.info(f"Showing only: {', '.join(selected_quadrants)} quadrants")
@@ -529,7 +529,7 @@ def main():
                 st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
                 # Quadrant counts
-                st.subheader("📈 Quadrant Distribution")
+                st.subheader(" Quadrant Distribution")
                 quadrant_counts = df_summary['Status'].value_counts()
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -543,7 +543,7 @@ def main():
                     st.metric("📈 Improving", quadrant_counts.get('Improving', 0))
 
             # Explanation
-            with st.expander("ℹ️ Understanding the Relative Rotation Graph"):
+            with st.expander(" Understanding the Relative Rotation Graph"):
                 st.markdown("""
                 **Quadrants Explanation:**
 
